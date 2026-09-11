@@ -1,24 +1,13 @@
-# Dockerized stock market data pipeline - Airflow (LocalExecutor) + PostgreSQL.
-#
-# Start everything with a single command:
-#
-#     docker compose up -d --build
-
-# Settings shared by all three Airflow containers.
 x-airflow-common: &airflow-common
   build: .
-  # One shared image name, so the Dockerfile is built once and reused.
   image: stock-pipeline-airflow:latest
-  # API key and database credentials come from .env - never from this file.
   env_file:
     - .env
   environment:
-    # LocalExecutor runs tasks inside the scheduler: no Celery, no Redis.
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
       postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}
-    # Makes scripts/stock_pipeline.py importable from the DAG.
     PYTHONPATH: /opt/airflow/scripts
   volumes:
     - ./dags:/opt/airflow/dags
@@ -29,7 +18,6 @@ x-airflow-common: &airflow-common
       condition: service_healthy
 
 services:
-  # Holds both the pipeline data (stocks) and the Airflow metadata (airflow).
   postgres:
     image: postgres:16
     environment:
@@ -38,8 +26,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      # Runs once on first start: creates the airflow database and the
-      # stock_prices table the pipeline updates.
       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -48,7 +34,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # One-shot setup: create the Airflow metadata tables and the UI login.
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
@@ -64,7 +49,6 @@ services:
           --role Admin --email admin@example.com || true
     restart: "no"
 
-  # Runs the DAG on its hourly schedule and executes the tasks.
   airflow-scheduler:
     <<: *airflow-common
     command: scheduler
@@ -73,7 +57,6 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # Airflow UI on http://localhost:8080
   airflow-webserver:
     <<: *airflow-common
     command: webserver

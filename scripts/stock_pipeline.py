@@ -1,17 +1,8 @@
-"""Fetch stock market data from Alpha Vantage and update the PostgreSQL table.
+"""Fetch stock quotes from Alpha Vantage and upsert them into PostgreSQL.
 
-The module is used by the Airflow DAG (dags/stock_market_dag.py) and can also
-be executed directly:
+Used by the Airflow DAG in dags/stock_market_dag.py, and runnable on its own:
 
     python stock_pipeline.py
-
-Pipeline steps:
-
-    fetch_quotes(symbols)    -> raw JSON payloads from the API (requests)
-    extract_quotes(payloads) -> flat rows with the relevant data points
-    upsert_quotes(rows)      -> UPSERT into the existing stock_prices table
-
-All configuration is read from environment variables - no secrets in code.
 """
 
 import logging
@@ -23,7 +14,6 @@ from psycopg2.extras import execute_values
 
 logger = logging.getLogger(__name__)
 
-# --- Configuration from environment variables ------------------------------
 API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY")
 BASE_URL = os.environ.get("ALPHAVANTAGE_BASE_URL", "https://www.alphavantage.co/query")
 SYMBOLS = os.environ.get("STOCK_SYMBOLS", "IBM")
@@ -39,7 +29,6 @@ DB_CONFIG = {
 TABLE_NAME = "stock_prices"
 REQUEST_TIMEOUT = 30
 
-# Column order used when writing rows to the table.
 COLUMNS = (
     "symbol",
     "trade_date",
@@ -53,15 +42,27 @@ COLUMNS = (
     "change_percent",
 )
 
+UPSERT_SQL = f"""
+    INSERT INTO {TABLE_NAME} ({", ".join(COLUMNS)})
+    VALUES %s
+    ON CONFLICT (symbol, trade_date) DO UPDATE SET
+        open_price     = EXCLUDED.open_price,
+        high_price     = EXCLUDED.high_price,
+        low_price      = EXCLUDED.low_price,
+        close_price    = EXCLUDED.close_price,
+        volume         = EXCLUDED.volume,
+        previous_close = EXCLUDED.previous_close,
+        change_amount  = EXCLUDED.change_amount,
+        change_percent = EXCLUDED.change_percent,
+        updated_at     = now()
+"""
+
 
 def symbol_list():
-    """Return the configured symbols as a clean list."""
     return [symbol.strip().upper() for symbol in SYMBOLS.split(",") if symbol.strip()]
 
 
-# --- Value cleaning --------------------------------------------------------
 def _text(value):
-    """Return a stripped string, or None when the value is missing or empty."""
     if value is None:
         return None
     value = str(value).strip()
@@ -71,8 +72,8 @@ def _text(value):
 def _number(value):
     """Validate a numeric field and return it as a string, or None if unusable.
 
-    Numbers are kept as strings so PostgreSQL parses them into NUMERIC without
-    any floating point rounding. Percentages arrive from the API as "0.7042%".
+    Numbers stay strings so PostgreSQL parses them into NUMERIC without any
+    floating point rounding. Percentages arrive from the API as "0.7042%".
     """
     value = _text(value)
     if value is None:
@@ -87,7 +88,6 @@ def _number(value):
 
 
 def _integer(value):
-    """Validate an integer field, or return None if unusable."""
     value = _number(value)
     if value is None:
         return None
@@ -95,22 +95,15 @@ def _integer(value):
 
 
 def _redact(message):
-    """Keep the API key out of the logs.
-
-    Request errors include the full request URL, which carries the key.
-    """
+    """Strip the API key out of a message; request errors echo the full URL."""
     message = str(message)
     if API_KEY:
         message = message.replace(API_KEY, "***")
     return message
 
 
-# --- Step 1: fetch from the API --------------------------------------------
 def fetch_quote(symbol):
-    """Call the Alpha Vantage GLOBAL_QUOTE endpoint for one symbol.
-
-    Returns the parsed JSON body, or None if the request could not be made.
-    """
+    """Return the GLOBAL_QUOTE payload for one symbol, or None if it failed."""
     if not API_KEY:
         raise RuntimeError("ALPHAVANTAGE_API_KEY environment variable is not set")
 
@@ -120,7 +113,7 @@ def fetch_quote(symbol):
         response.raise_for_status()
         return response.json()
     except requests.exceptions.JSONDecodeError as error:
-        # Checked before RequestException, which it inherits from.
+        # Must precede RequestException, which it inherits from.
         logger.error(
             "API response for %s was not valid JSON: %s", symbol, _redact(error)
         )
@@ -131,7 +124,7 @@ def fetch_quote(symbol):
 
 
 def fetch_quotes(symbols):
-    """Fetch every symbol. A symbol that fails is skipped, not fatal."""
+    """Fetch every symbol, skipping the ones that fail."""
     payloads = {}
     for symbol in symbols:
         payload = fetch_quote(symbol)
@@ -142,17 +135,12 @@ def fetch_quotes(symbols):
     return payloads
 
 
-# --- Step 2: parse the JSON and extract the data points --------------------
 def extract_quote(payload):
-    """Extract the relevant data points from one GLOBAL_QUOTE response.
-
-    Returns a row dict, or None when the response holds no usable quote.
-    """
+    """Turn one GLOBAL_QUOTE response into a row, or None if it holds no quote."""
     if not payload:
         return None
 
-    # Alpha Vantage reports rate limits and bad requests with a message field
-    # instead of an HTTP error status.
+    # Rate limits and bad requests come back as a message field, not an HTTP error.
     for key in ("Error Message", "Note", "Information"):
         if key in payload:
             logger.error("API returned a message instead of data: %s", payload[key])
@@ -176,8 +164,6 @@ def extract_quote(payload):
         "change_percent": _number(quote.get("10. change percent")),
     }
 
-    # symbol and trade_date are the primary key, so a row without them cannot
-    # be stored.
     if not row["symbol"] or not row["trade_date"]:
         logger.warning("Skipping quote without symbol or trading day: %s", quote)
         return None
@@ -192,7 +178,6 @@ def extract_quote(payload):
 
 
 def extract_quotes(payloads):
-    """Extract rows from every fetched payload, skipping unusable responses."""
     rows = []
     for symbol, payload in payloads.items():
         row = extract_quote(payload)
@@ -204,29 +189,8 @@ def extract_quotes(payloads):
     return rows
 
 
-# --- Step 3: update the existing PostgreSQL table --------------------------
-UPSERT_SQL = f"""
-    INSERT INTO {TABLE_NAME} ({", ".join(COLUMNS)})
-    VALUES %s
-    ON CONFLICT (symbol, trade_date) DO UPDATE SET
-        open_price     = EXCLUDED.open_price,
-        high_price     = EXCLUDED.high_price,
-        low_price      = EXCLUDED.low_price,
-        close_price    = EXCLUDED.close_price,
-        volume         = EXCLUDED.volume,
-        previous_close = EXCLUDED.previous_close,
-        change_amount  = EXCLUDED.change_amount,
-        change_percent = EXCLUDED.change_percent,
-        updated_at     = now()
-"""
-
-
 def upsert_quotes(rows):
-    """Insert or update the given rows in the stock_prices table.
-
-    Returns the number of rows written. Every row is written in one
-    transaction, so a failure leaves the table unchanged.
-    """
+    """Write the rows to stock_prices in one transaction and return the count."""
     if not rows:
         logger.warning("No rows to write, skipping database update")
         return 0
@@ -248,9 +212,7 @@ def upsert_quotes(rows):
             connection.close()
 
 
-# --- Full pipeline ---------------------------------------------------------
 def run():
-    """Run fetch, extract and update in sequence."""
     symbols = symbol_list()
     logger.info("Starting pipeline for symbol(s): %s", ", ".join(symbols))
 
