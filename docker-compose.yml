@@ -1,0 +1,89 @@
+# Dockerized stock market data pipeline - Airflow (LocalExecutor) + PostgreSQL.
+#
+# Start everything with a single command:
+#
+#     docker compose up -d --build
+
+# Settings shared by all three Airflow containers.
+x-airflow-common: &airflow-common
+  build: .
+  # One shared image name, so the Dockerfile is built once and reused.
+  image: stock-pipeline-airflow:latest
+  # API key and database credentials come from .env - never from this file.
+  env_file:
+    - .env
+  environment:
+    # LocalExecutor runs tasks inside the scheduler: no Celery, no Redis.
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}
+    # Makes scripts/stock_pipeline.py importable from the DAG.
+    PYTHONPATH: /opt/airflow/scripts
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./scripts:/opt/airflow/scripts
+    - airflow-logs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  # Holds both the pipeline data (stocks) and the Airflow metadata (airflow).
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Runs once on first start: creates the airflow database and the
+      # stock_prices table the pipeline updates.
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot setup: create the Airflow metadata tables and the UI login.
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        airflow users create \
+          --username "$${AIRFLOW_ADMIN_USER}" \
+          --password "$${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname Admin --lastname User \
+          --role Admin --email admin@example.com || true
+    restart: "no"
+
+  # Runs the DAG on its hourly schedule and executes the tasks.
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # Airflow UI on http://localhost:8080
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8082:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  airflow-logs:
