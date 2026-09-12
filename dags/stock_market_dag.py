@@ -1,11 +1,3 @@
-"""Airflow DAG orchestrating the stock market pipeline.
-
-    fetch_stock_data -> extract_stock_data -> update_database
-
-The work itself lives in scripts/stock_pipeline.py, which is importable because
-docker-compose.yml puts /opt/airflow/scripts on PYTHONPATH.
-"""
-
 from datetime import datetime, timedelta
 
 from airflow.decorators import dag, task
