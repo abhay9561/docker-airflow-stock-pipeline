@@ -3,19 +3,19 @@
 ````markdown
 # Dockerized Stock Market Data Pipeline
 
-A Dockerized stock market data pipeline built using **Apache Airflow, Python, PostgreSQL, Docker, and the Alpha Vantage API**.
+A Dockerized stock market data pipeline built using Apache Airflow, Python, PostgreSQL, Docker, and the Alpha Vantage API.
 
 The pipeline fetches stock market data in JSON format, extracts the required information, and stores or updates it in PostgreSQL. Apache Airflow manages the workflow and runs the pipeline on a daily schedule.
 
 ## Tech Stack
 
-- **Python** – Data fetching and processing
-- **Apache Airflow** – Workflow orchestration and scheduling
-- **PostgreSQL** – Data storage
-- **Alpha Vantage API** – Stock market data source
-- **Docker & Docker Compose** – Containerization and deployment
-- **Requests** – API communication
-- **psycopg2** – PostgreSQL connectivity
+- Python – Data fetching and processing
+- Apache Airflow – Workflow orchestration and scheduling
+- PostgreSQ – Data storage
+- Alpha Vantage API – Stock market data source
+- Docker & Docker Compose – Containerization and deployment
+- Requests – API communication
+- psycopg2 – PostgreSQL connectivity
 
 ## Pipeline
 
