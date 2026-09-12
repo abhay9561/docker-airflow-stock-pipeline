@@ -1,10 +1,3 @@
-"""Fetch stock quotes from Alpha Vantage and upsert them into PostgreSQL.
-
-Used by the Airflow DAG in dags/stock_market_dag.py, and runnable on its own:
-
-    python stock_pipeline.py
-"""
-
 import logging
 import os
 
